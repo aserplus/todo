@@ -1,0 +1,13 @@
+{
+  "name": "create-item",
+  "version": "1.0.0",
+  "description": "Create item",
+  "main": "app.js",
+  "author": "Andy Serplus",
+  "dependencies": {
+    "aws-sdk": "^2.799.0",
+    "uuid": "^8.3.2"
+  },
+  "scripts": {},
+  "devDependencies": {}
+}

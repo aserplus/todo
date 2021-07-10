@@ -1,0 +1,46 @@
+type Item {
+    id: ID!
+    listId: ID!
+    title: String!
+    completed: Boolean
+    createdAt: AWSDateTime
+    modifiedAt: AWSDateTime
+}
+
+type List {
+    id: ID!
+    title: String!
+    items: [Item]
+    createdAt: AWSDateTime
+    modifiedAt: AWSDateTime
+}
+
+type Query {
+    getLists: [List]
+    getList(id: ID!): List
+    getListByTitle(title: String!): List
+}
+
+type Mutation {
+    createList(title: String!): List
+
+    createItem(
+        listId: ID!
+        title: String!
+        completed: Boolean = false
+    ): Item
+
+    deleteList(id: ID!): Boolean
+
+    updateItem(
+        id: ID!
+        listId: ID!
+        title: String
+        completed: Boolean
+    ): Item
+}
+
+schema {
+    query: Query
+    mutation: Mutation
+}

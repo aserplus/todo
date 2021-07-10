@@ -1,0 +1,459 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Create a serverless infra for a simple todo app
+Globals:
+  Function:
+      Timeout: 3
+      Runtime: nodejs14.x
+      Environment:
+        Variables:
+          TABLE_NAME: todo
+          INDEX_REF_NAME: todoRef
+
+Parameters:
+  AppName:
+    Type: String
+    Description: Name of the application
+    Default: todo-app
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool 
+    Properties: 
+      UserPoolName: !Sub ${AppName}-UserPool 
+      Policies: 
+        PasswordPolicy: 
+          MinimumLength: 8
+      AutoVerifiedAttributes:
+        - email
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient 
+    Properties: 
+      UserPoolId: !Ref UserPool 
+      ClientName: !Sub ${AppName}-UserPoolClient 
+      GenerateSecret: false # set to false for web clients
+      SupportedIdentityProviders:
+        - COGNITO
+      CallbackURLs:
+        - !Sub https://${CloudfrontDistribution.DomainName}
+      LogoutURLs:
+        - !Sub https://${CloudfrontDistribution.DomainName}/logout
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+        - implicit #for testing with postman
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: todo
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: refId
+          AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema: 
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: todoRef
+          KeySchema: 
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: refId
+              KeyType: RANGE
+          Projection: 
+            NonKeyAttributes:
+              - title
+              - refId
+              - itemId
+              - listId
+              - createdAt
+              - modifiedAt
+              - completed
+            ProjectionType: INCLUDE
+
+  LambdaServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+
+  CloudWatchPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: !Sub ${AppName}-CloudWatchPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          -
+            Effect: Allow
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+            Resource:
+              - "arn:aws:logs:*:*:*"
+      Roles:
+        -
+          Ref: "LambdaServiceRole"
+
+  DynamoDbAccessPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: !Sub ${AppName}-DynamoDbAccessPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          -
+            Effect: Allow
+            Action:
+              - "dynamodb:GetItem"
+              - "dynamodb:Query"
+              - "dynamodb:PutItem"
+              - "dynamodb:UpdateItem"
+              - "dynamodb:DeleteItem"
+              - "dynamodb:BatchWriteItem"
+            Resource:
+              - !GetAtt DynamoDBTable.Arn
+              - !Sub "${DynamoDBTable.Arn}/index/*"
+      Roles:
+        -
+          Ref: "LambdaServiceRole"
+
+
+
+  CreateListFunc:
+    Type: AWS::Serverless::Function 
+    Properties:
+      FunctionName: CreateListFunc
+      Handler: src/createList.createListHandler
+      Role: !GetAtt LambdaServiceRole.Arn
+
+  UpdateItemFunc:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: UpdateItemFunc
+      Handler: src/updateItem.updateItemHandler
+      Role: !GetAtt LambdaServiceRole.Arn
+
+
+  DeleteListFunc:
+    Type: AWS::Serverless::Function 
+    Properties:
+      FunctionName: DeleteListFunc
+      Handler: src/deleteList.deleteListHandler
+      Role: !GetAtt LambdaServiceRole.Arn
+
+  GetListByTitleFunc:
+    Type: AWS::Serverless::Function 
+    Properties:
+      FunctionName: GetListByTitleFunc
+      Handler: src/getListByTitle.getListByTitleHandler
+      Role: !GetAtt LambdaServiceRole.Arn
+
+  GetListsFunc:
+    Type: AWS::Serverless::Function 
+    Properties:
+      FunctionName: GetListsFunc
+      Handler: src/getLists.getListsHandler
+      Role: !GetAtt LambdaServiceRole.Arn
+
+
+  GetListFunc:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: GetListFunc
+      Handler: src/getList.getListHandler
+      Role: !GetAtt LambdaServiceRole.Arn
+
+  AppSyncServiceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "appsync.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+
+  LambdaAccessPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "DirectAppSyncLambda"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Action: "lambda:invokeFunction"
+            Resource:
+              - !GetAtt CreateItemFunc.Arn
+              - !GetAtt CreateListFunc.Arn
+              - !GetAtt UpdateItemFunc.Arn
+              - !GetAtt DeleteListFunc.Arn
+              - !GetAtt GetListByTitleFunc.Arn
+              - !GetAtt GetListsFunc.Arn
+              - !GetAtt GetListFunc.Arn
+      Roles:
+        -
+          Ref: "AppSyncServiceRole"
+
+  GraphQLApi:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: !Sub ${AppName}-GraphQLApi
+      AuthenticationType: AMAZON_COGNITO_USER_POOLS
+      UserPoolConfig:
+        UserPoolId: !Ref UserPool
+        AwsRegion: !Sub "${AWS::Region}"
+        DefaultAction: ALLOW
+
+  GraphQLApiKey:
+    Type: AWS::AppSync::ApiKey
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+  
+  GraphQLApiSchema:
+    Type: AWS::AppSync::GraphQLSchema
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      DefinitionS3Location: "./graphQL/schema.graphql"
+
+  CreateItemFunc:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: CreateItemFunc
+      Handler: src/createItem.createItemHandler
+      Role: !GetAtt LambdaServiceRole.Arn
+
+  CreateItemDataSource:
+    Type: "AWS::AppSync::DataSource"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      Name: "CreateItemFunc"
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt AppSyncServiceRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt CreateItemFunc.Arn
+
+  CreateItemResolver:
+    Type: "AWS::AppSync::Resolver"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      TypeName: "Mutation"
+      FieldName: "createItem"
+      DataSourceName: !GetAtt CreateItemDataSource.Name
+
+  CreateListDataSource:
+    Type: "AWS::AppSync::DataSource"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      Name: "CreateListFunc"
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt AppSyncServiceRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt CreateListFunc.Arn
+
+
+  CreateListResolver:
+    Type: "AWS::AppSync::Resolver"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      TypeName: "Mutation"
+      FieldName: "createList"
+      DataSourceName: !GetAtt CreateListDataSource.Name
+
+  UpdateItemDataSource:
+    Type: "AWS::AppSync::DataSource"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      Name: "UpdateItemFunc"
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt AppSyncServiceRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt UpdateItemFunc.Arn
+
+  UpdateItemResolver:
+    Type: "AWS::AppSync::Resolver"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      TypeName: "Mutation"
+      FieldName: "updateItem"
+      DataSourceName: !GetAtt UpdateItemDataSource.Name
+
+  DeleteListDataSource:
+    Type: "AWS::AppSync::DataSource"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      Name: "DeleteListFunc"
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt AppSyncServiceRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt DeleteListFunc.Arn
+        
+  DeleteListResolver:
+    Type: "AWS::AppSync::Resolver"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      TypeName: "Mutation"
+      FieldName: "deleteList"
+      DataSourceName: !GetAtt DeleteListDataSource.Name
+
+  GetListByTitleDataSource:
+    Type: "AWS::AppSync::DataSource"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      Name: "GetListByTitleFunc"
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt AppSyncServiceRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt GetListByTitleFunc.Arn
+        
+  GetListByTitleResolver:
+    Type: "AWS::AppSync::Resolver"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      TypeName: "Query"
+      FieldName: "getListByTitle"
+      DataSourceName: !GetAtt GetListByTitleDataSource.Name
+
+  GetListsDataSource:
+    Type: "AWS::AppSync::DataSource"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      Name: "GetListsFunc"
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt AppSyncServiceRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt GetListsFunc.Arn
+        
+  GetListsResolver:
+    Type: "AWS::AppSync::Resolver"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      TypeName: "Query"
+      FieldName: "getLists"
+      DataSourceName: !GetAtt GetListsDataSource.Name
+
+  GetListDataSource:
+    Type: "AWS::AppSync::DataSource"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      Name: "GetListFunc"
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt AppSyncServiceRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt GetListFunc.Arn
+
+  GetListResolver:
+    Type: "AWS::AppSync::Resolver"
+    Properties:
+      ApiId: !GetAtt GraphQLApi.ApiId
+      TypeName: "Query"
+      FieldName: "getList"
+      DataSourceName: !GetAtt GetListDataSource.Name
+
+  CloudFrontOriginAccessIdentity:
+    Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: 'Serverless website OA'
+
+  CloudfrontDistribution:
+    Type: "AWS::CloudFront::Distribution"
+    Properties:
+      DistributionConfig:
+        Comment: "Cloudfront distribution for serverless website"
+        DefaultRootObject: "index.html"
+        Enabled: true
+        # List of origins that Cloudfront will connect to
+        Origins:
+          - Id: s3-website
+            DomainName: !GetAtt S3Bucket.DomainName
+            S3OriginConfig:
+              # Restricting Bucket access through an origin access identity
+              OriginAccessIdentity:
+                !Sub "origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}"
+        # To connect the CDN to the origins you need to specify behaviours
+        DefaultCacheBehavior:
+          # Compress resources automatically ( gzip )
+          Compress: 'true'
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          ForwardedValues:
+            QueryString: false
+          TargetOriginId: s3-website
+          ViewerProtocolPolicy : redirect-to-https
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Select [2, !Split ['/', !Ref AWS::StackId]]
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+      # Restricting access to cloudfront only.
+        Statement:
+          -
+            Effect: Allow
+            Action: 's3:GetObject'
+            Resource:
+              - !Sub "arn:aws:s3:::${S3Bucket}/*"
+            Principal:
+              AWS: !Sub "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity}"
+
+
+Outputs:
+  UserPoolId:
+    Description: "Copy this into the REACT_APP_USER_POOL_ID env variable in ./www/.env file"
+    Value: !Ref UserPool
+
+  UserPoolClientId:
+    Description: "Copy this into the REACT_APP_USER_POOL_WEBCLIENT_ID env variable in ./www/.env file"
+    Value: !Ref UserPoolClient
+
+  GraphQLApiEndpoint:
+    Description: "Copy this into the REACT_APP_GRAPHQL_ENDPOINT env variable in ./www/.env file"
+    Value: !GetAtt GraphQLApi.GraphQLUrl
+
+  GraphQLApiId:
+    Description: "Copy this into the REACT_APP_GRAPHQL_API_KEY env variable in ./www/.env file"
+    Value: !GetAtt GraphQLApi.ApiId
+
+  S3BucketDomainName:
+    Value: !GetAtt S3Bucket.DomainName
+
+  CloudfrontDistributionDomainName:
+    Value: !GetAtt CloudfrontDistribution.DomainName
