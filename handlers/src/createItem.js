@@ -4,6 +4,14 @@ exports.createItemHandler = async (context) => {
     const userId = context.identity.sub;
     const { listId, title, completed = false } = context.arguments;
 
+    if (!title) {
+        throw new Error('A title is required');
+    }
+
+    if (title.length > 1024) {
+        throw new Error('A title must be less or equal to 1024 character length');
+    }
+
     const count = await getListItemsCount(listId, userId);
     if (count > 1000) {
         console.log(`USER_ID:${userId} - List (${listId}) has ${count} items`);

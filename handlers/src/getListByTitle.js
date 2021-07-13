@@ -2,8 +2,16 @@ const { getListByTitle } = require('./listRepository');
 const { getItems } = require('./itemRepository');
 
 exports.getListByTitleHandler = async (context) => {
-    const { title } = context.arguments;
     const userId = context.identity.sub;
+    const { title } = context.arguments;
+
+    if (!title) {
+        throw new Error('A title is required');
+    }
+
+    if (title.length > 1024) {
+        throw new Error('A title must be less or equal to 1024 character length');
+    }
 
     const list = await getListByTitle(title, userId);
     if (!list) {

@@ -4,6 +4,10 @@ exports.updateItemHandler = async (context) => {
     const userId = context.identity.sub;
     const { id, listId, title, completed, } = context.arguments;
 
+    if (title && title.length > 1024) {
+        throw new Error('A title must be less or equal to 1024 character length');
+    }
+
     const item = await getItem(id, listId, userId);
     if (!item) {
         throw new Error('Item does not exist');
